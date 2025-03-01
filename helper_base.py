@@ -13,11 +13,11 @@ from telebot import types
 import random
 import hashlib
 
-BOT_TOKEN = "6370204668:AAE8bXa4KdAVYQOJ66wURK7xFY21SzJW7Rg"
-DATABASE_PATH = "E:\\Helper_bot\\bot_database.db" # Укажите имя файла вашей БД
-CROSS_ZERO_DB_PATH = "E:\\Helper_bot\\cross_and_zero_database.db"
+BOT_TOKEN = 
+DATABASE_PATH = 
+CROSS_ZERO_DB_PATH = 
 print(f"DATABASE_PATH = {DATABASE_PATH}")
-OWNER_ID = 1241613863
+OWNER_ID = 
 
 def create_cross_zero_tables():
     try:
