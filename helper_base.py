@@ -11,11 +11,13 @@ import sqlite3
 from threading import Timer
 from telebot import types
 import random
+import hashlib
 
 BOT_TOKEN = "6370204668:AAE8bXa4KdAVYQOJ66wURK7xFY21SzJW7Rg"
 DATABASE_PATH = "E:\\Helper_bot\\bot_database.db" # Укажите имя файла вашей БД
 CROSS_ZERO_DB_PATH = "E:\\Helper_bot\\cross_and_zero_database.db"
 print(f"DATABASE_PATH = {DATABASE_PATH}")
+OWNER_ID = 1241613863
 
 def create_cross_zero_tables():
     try:
@@ -39,6 +41,9 @@ def create_cross_zero_tables():
         print(f"Ошибка при создании таблиц крестиков-ноликов: {e}")
 
 bot = telebot.TeleBot(BOT_TOKEN)
+
+# Возможные ходы
+CHOICES = ['камень', 'ножницы', 'бумага']
 
 # Время запуска бота
 bot_start_time = datetime.datetime.now()
@@ -94,6 +99,26 @@ def create_tables():
     except Exception as e:
         print(f"Ошибка при создании таблиц: {e}")
 
+@bot.message_handler(commands=['report'])
+def report_command(message):
+    chat_id = message.chat.id
+    chat_name = message.chat.title if message.chat.type in ["group", "supergroup"] else message.chat.username
+    reporter_username = message.from_user.username
+
+    # Формируем текст сообщения для владельца
+    report_text = f"Получен /report\n"
+    report_text += f"Чат: \"{chat_name}\"\n"
+    report_text += f"Репортёр: @{reporter_username}\n\n"
+    report_text += "Рекомендую проверить, что там произошло"
+
+    try:
+        # Отправляем сообщение владельцу
+        bot.send_message(OWNER_ID, report_text)
+        bot.reply_to(message, "Ваш репорт был отправлен создателю бота.")
+    except telebot.apihelper.ApiTelegramException as e:
+        print(f"Ошибка при отправке репорта создателю: {e}")
+        bot.reply_to(message, "Произошла ошибка при отправке репорта. Попробуйте позже.")
+
 # Функция для получения уровня доступа пользователя из БД
 def is_admin(user_id):
     try:
@@ -118,6 +143,22 @@ def is_dev(user_id):
     except Exception as e:
         print(f"Ошибка при проверке разработчика: {e}")
         return False
+
+@bot.message_handler(func=lambda message: message.text is not None and message.text.startswith('dbq'))
+def handle_dbq_message(message):
+    try:
+        # Получаем текст после 'dbq' (если он есть)
+        text_after_dbq = message.text[3:].strip()  # Обрезаем 'dbq' и пробелы
+
+        if text_after_dbq:
+            logging.info(f"Получено сообщение, начинающееся с 'dbq': {message.text}")
+            bot.reply_to(message, "📍")
+        else:
+            logging.info("Получено сообщение 'dbq' без текста после.")
+            bot.reply_to(message, "📍")
+
+    except Exception as e:
+        logging.exception(f"Ошибка при обработке сообщения 'dbq': {e}")
 
 def start_game(chat_id, player1_id, player2_id):
     try:
@@ -444,6 +485,138 @@ def xo_callback(call):
     except Exception as e:
         print(f"Ошибка в xo_callback: {e}")
         bot.answer_callback_query(call.id, "Произошла ошибка.")
+
+# Функция для определения победителя
+def determine_winner(player1_move, player2_move):
+    """Определяет победителя в игре камень-ножницы-бумага."""
+    if player1_move == player2_move:
+        return "Ничья!"
+    elif (player1_move == 'камень' and player2_move == 'ножницы') or \
+         (player1_move == 'ножницы' and player2_move == 'бумага') or \
+         (player1_move == 'бумага' and player2_move == 'камень'):
+        return f"@{player1_username} победил!"
+    else:
+        return f"@{player2_username} победил!"
+
+def create_rock_paper_scissors_table():
+    """Создает таблицу для хранения результатов игр "Камень, ножницы, бумага"."""
+    try:
+        conn = sqlite3.connect(CROSS_ZERO_DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS rock_paper_scissors (
+                game_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id INTEGER NOT NULL,
+                player1_id INTEGER NOT NULL,
+                player1_username TEXT,
+                player1_move TEXT,
+                player2_id INTEGER NOT NULL,
+                player2_username TEXT,
+                player2_move TEXT,
+                winner TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+        conn.close()
+        print("Таблица rock_paper_scissors успешно создана (или уже существовала).")  # Добавлено логирование
+    except sqlite3.Error as e:
+        print(f"Ошибка при создании таблицы rock_paper_scissors: {e}")
+
+def generate_player2_id(player2_username):
+    """Генерирует player2_id на основе username."""
+    return int(hashlib.sha256(player2_username.encode('utf-8')).hexdigest(), 16) % 10**10
+
+game_state = 0
+
+@bot.message_handler(commands=['rock'])
+def play(message):
+    chat_id = message.chat.id
+    player1_id = message.from_user.id
+    player1_username = message.from_user.username
+
+    # Проверяем, нет ли уже активной игры в этом чате
+    if chat_id in games:
+        bot.reply_to(message, "В этом чате уже есть активная игра. Дождитесь ее завершения или прервите командой /end_rock (только для администраторов).")
+        return
+
+    try:
+        args = message.text.split()
+
+        if message.reply_to_message:
+            # ID из реплая
+            player2_id = message.reply_to_message.from_user.id
+            player2_username = message.reply_to_message.from_user.username
+
+        elif len(args) > 1:
+            # ID из аргумента
+            try:
+                player2_id = int(args[1])
+                # Пытаемся получить username по id (если это возможно)
+                user = bot.get_chat_member(chat_id, player2_id).user
+                player2_username = user.username
+            except ValueError:
+                bot.reply_to(message, "ID второго игрока должен быть числом.")
+                return
+            except telebot.apihelper.ApiTelegramException as e:
+                bot.reply_to(message, f"Не удалось получить информацию о пользователе с ID {player2_id}. Возможно, его нет в этом чате или он заблокировал бота.")
+                return
+        else:
+            bot.reply_to(message, "Укажите ID второго игрока или сделайте реплай на его сообщение.")
+            return
+
+        if player1_id == player2_id:
+            bot.reply_to(message, "Нельзя играть с самим собой!")
+            return
+
+        # Сохраняем информацию об игре
+        games[chat_id] = (player1_id, player1_username, None, player2_id, player2_username, None)
+
+        # Отправляем запрос на выбор хода
+        bot.send_message(chat_id, f"Игра между:\n @{player1_username} VS @{player2_username}\n Игровая панель ниже, сделайте свой выбор.")
+        send_move_request(chat_id)
+
+    except Exception as e:
+        print(f"Ошибка в /play: {e}")
+        bot.reply_to(message, "Произошла ошибка при запуске игры.")
+
+def save_rock_paper_scissors_game(chat_id, player1_id, player1_username, player1_move, player2_id, player2_username, player2_move, winner):
+    """Сохраняет информацию об игре в базе данных."""
+    try:
+        conn = sqlite3.connect(CROSS_ZERO_DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO rock_paper_scissors (chat_id, player1_id, player1_username, player1_move, player2_id, player2_username, player2_move, winner)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (chat_id, player1_id, player1_username, player1_move, player2_id, player2_username, player2_move, winner))
+        conn.commit()
+        conn.close()
+        print("Информация об игре успешно сохранена в rock_paper_scissors.")  # Добавлено логирование
+        print(f"save_rock_paper_scissors_game: chat_id={chat_id}, player1_id={player1_id}, player1_move={player1_move}, player2_id={player2_id}, player2_move={player2_move}") # Добавлено логирование
+    except sqlite3.Error as e:
+        print(f"Ошибка при сохранении информации об игре: {e}")
+
+# Словарь для хранения состояния игр
+games = {}  # chat_id: (player1_id, player1_username, player1_move, player2_id, player2_username)
+
+def send_move_request(chat_id):
+    """Отправляет сообщение с запросом хода."""
+    markup = types.InlineKeyboardMarkup(row_width=3)
+    buttons = [types.InlineKeyboardButton(move, callback_data=f'move_{chat_id}_{move}') for move in CHOICES]
+    markup.add(*buttons)
+    bot.send_message(chat_id, "Игровая панель | Варианты", reply_markup=markup)
+
+def get_user_id_from_username(username):
+    """Пытается получить user_id из базы данных по username."""
+    conn = sqlite3.connect(DATABASE_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM users WHERE username = ?", (username,))  # Замените "users" на имя вашей таблицы пользователей, если оно другое
+    result = cursor.fetchone()
+    conn.close()
+    if result:
+        return result[0]
+    else:
+        return None
 
 def get_inventory(user_id):
     try:
@@ -1456,6 +1629,7 @@ def help_command(message):
     commands_list_user += "/inventory - Показать ваш инвентарь.\n"
     commands_list_user += "/cucumber - Добавить 1 огурец в ваш инвентарь.\n"
     commands_list_user += "/xo <user_id> или reply - Начать игру в крестики-нолики с указанным пользователем (через ID или reply).\n"
+    commands_list_user += "/play <user_id> или reply - Начать игру в камень, ножницы, бумага с указанным пользователем (через ID или reply).\n"
 
     # Команды для администраторов
     commands_list_admin = ""
@@ -1465,6 +1639,8 @@ def help_command(message):
         commands_list_admin += "/chats - Показать список подключенных чатов.\n"
         commands_list_admin += "/chat_connect - Подключить текущий чат к боту.\n"
         commands_list_admin += "/chat_delete - Удалить текущий чат из подключенных.\n"
+        commands_list_admin += "Список доступных команд (Администратор):\n"
+        commands_list_admin += "/end_rock - Прервать текущую игру в камень, ножницы, бумага.\n"
 
     # Команды для разработчиков
     commands_list_dev = ""
@@ -1477,6 +1653,8 @@ def help_command(message):
         commands_list_dev += "/restart - Перезапустить бота\n"  # Добавьте, если у вас есть эта команда
         commands_list_dev += "/add_dev - Добавить разработчика\n"  # Добавьте, если у вас есть эта команда
         commands_list_dev += "/remove_dev - Удалить разработчика\n"  # Добавьте, если у вас есть эта команда
+        commands_list_dev += "Список доступных команд (Разработчик):\n"
+        commands_list_dev += "/restart - Перезапустить бота\n"
 
     # Команды для конкретного пользователя
     commands_list_owner = ""
@@ -1493,6 +1671,229 @@ def help_command(message):
         final_list += "\n" + commands_list_owner
 
     bot.reply_to(message, final_list)
+
+# Обработчик callback_query
+@bot.callback_query_handler(func=lambda call: call.data.startswith('move_'))
+def handle_move(call):
+    try:
+        data = call.data[5:].split('_')  #  Разделяем 'move_chatid_move'
+        chat_id = int(data[0])
+        move = data[1]
+
+        if chat_id in games:
+            player1_id, player1_username, player1_move, player2_id, player2_username, player2_move = games[chat_id]
+
+            #Определяем кто сделал ход
+            if call.from_user.id == player1_id and player1_move is None: #Если это первый игрок и он еще не ходил
+                #Сохраняем ход первого игрока
+                games[chat_id] = (player1_id, player1_username, move, player2_id, player2_username, player2_move) #Сохраняем его ход
+                bot.answer_callback_query(call.id, f"Выбор сделан: {move}")
+                bot.send_message(chat_id, f"@{player1_username} | Выбор сделан.")
+
+            elif call.from_user.id == player2_id and player2_move is None: #Если это второй игрок и он еще не ходил
+                # Сохраняем ход второго игрока
+                games[chat_id] = (player1_id, player1_username, player1_move, player2_id, player2_username, move)  # Сохраняем его ход
+                bot.answer_callback_query(call.id, f"Выбор сделан: {move}")
+                bot.send_message(chat_id, f"@{player2_username} | Выбор сделан.")
+
+            else:
+                bot.answer_callback_query(call.id, "Это не ваша игра или вы уже сделали свой ход!")
+                return
+
+            # Проверяем, сделали ли оба игрока ход, и определяем победителя
+            player1_id, player1_username, player1_move, player2_id, player2_username, player2_move = games[chat_id] #Обновляем данные
+            if player1_move is not None and player2_move is not None:
+                #Определяем победителя
+                if player1_move == player2_move:
+                    winner = "Ничья!"
+                elif (player1_move == 'камень' and player2_move == 'ножницы') or \
+                     (player1_move == 'ножницы' and player2_move == 'бумага') or \
+                     (player1_move == 'бумага' and player2_move == 'камень'):
+                    winner = f"\n@{player1_username} победил!"
+                else:
+                    winner = f"\n@{player2_username} победил!"
+                #Сохраняем результаты игры
+                save_rock_paper_scissors_game(chat_id, player1_id, player1_username, player1_move, player2_id, player2_username, player2_move, winner)
+                #Выводим победителя
+                bot.send_message(chat_id, f"Игра окончена!\n@{player1_username} выбрал {player1_move}\n@{player2_username} выбрал {player2_move}\n{winner}!")
+                del games[chat_id]  # Удаляем игру
+
+        else:
+            bot.answer_callback_query(call.id, "Игра не найдена!")
+
+    except ValueError as e:
+        print(f"Ошибка разбора callback_{e}")
+        bot.answer_callback_query(call.id, "Произошла ошибка. Попробуйте еще раз.")
+    except Exception as e:
+        print(f"Общая ошибка в handle_move: {e}")
+        bot.answer_callback_query(call.id, "Произошла ошибка. Попробуйте еще раз.")
+
+def check_for_winner(chat_id, player1_id, player1_username, player2_id, player2_username):
+    """Проверяет, сделали ли оба игрока ходы, и определяет победителя."""
+    if chat_id in games:
+        try:
+            player1_id, player1_username, player1_move, player2_id, player2_username, player2_move = games[chat_id] #Достаем все значения
+
+            #Определяем есть ли ход у обоих игроков
+            if player1_move is not None and player2_move is not None: #Проверяем, что оба сделали ход
+
+                #Определяем победителя
+                if player1_move == player2_move:
+                    winner = "Ничья!"
+                elif (player1_move == 'камень' and player2_move == 'ножницы') or \
+                     (player1_move == 'ножницы' and player2_move == 'бумага') or \
+                     (player1_move == 'бумага' and player2_move == 'камень'):
+                    winner = f"@{player1_username} победил!"
+                else:
+                    winner = f"@{player2_username} победил!"
+
+                #Сохраняем результаты игры
+                save_rock_paper_scissors_game(chat_id, player1_id, player1_username, player1_move, player2_id, player2_username, player2_move, winner)
+                #Выводим победителя
+                bot.send_message(chat_id, f"Игра окончена!\n@{player1_username} выбрал {player1_move}\n@{player2_username} выбрал {player2_move}\nПобедил: {winner}!")
+                del games[chat_id]  # Удаляем игру
+
+            else:
+                print("check_for_winner: Не все игроки сделали ход.")
+        except Exception as e:
+            print(f"Ошибка в check_for_winner: {e}")
+
+    else:
+        print("check_for_winner: Игра не найдена")
+
+@bot.callback_query_handler(func=lambda call: call.data.startswith('confirm_game_'))
+def handle_game_confirmation(call):
+    print("handle_game_confirmation start") # <----
+    try:
+        data = call.data.split('_')
+        chat_id = int(data[2])  # chat_id
+        action = data[3]  # yes/no
+
+        print(f"handle_game_confirmation: chat_id={chat_id}, action={action}")  # ЛОГ
+
+        # Проверяем, есть ли игра с подтверждением в этом чате
+        if chat_id in games:
+            # Достаем информацию об игроках из games, чтобы убедиться, что они есть
+            player1_id, player1_username, _, player2_id, player2_username, _ = games.get(chat_id, (None, None, None, None, None, None))
+
+            if player1_id and player2_id:  # Убедимся, что информация об игроках существует
+                if call.from_user.id == player2_id:  # Проверяем, что нажавший кнопку - второй игрок
+                    if action == 'yes':
+                        # Игра подтверждена
+                        print("handle_game_confirmation: action = yes") # <----
+                        bot.send_message(chat_id, f"Игра между:\n @{player1_username} VS @{player2_username}\n Игровая панель ниже, сделайте свой выбор.")
+                        send_move_request(chat_id)
+
+                    elif action == 'no':
+                        # Игра отменена
+                        print("handle_game_confirmation: action = no") # <----
+                        bot.send_message(chat_id, f"@{player2_username} отклонил приглашение на игру.")
+                    if chat_id in games:
+                        del games[chat_id]  # Удаляем игру, если она была создана
+                else:
+                    bot.answer_callback_query(call.id, "Только второй игрок может подтвердить или отменить игру!")
+                    return
+            else:
+                bot.send_message(chat_id, "Ошибка при запуске игры (информация об игроках потеряна).")
+                if chat_id in games:  #  Удаляем игру, если она была создана
+                    del games[chat_id]
+        else:
+            bot.answer_callback_query(call.id, "Игра не найдена или была прервана.")
+            return
+
+        bot.answer_callback_query(call.id, "Ответ принят!") #Отвечаем на callback
+        print("handle_game_confirmation end") # <----
+
+    except (IndexError, ValueError) as e:
+        print(f"Ошибка обработки подтверждения игры: {e}")
+        bot.answer_callback_query(call.id, "Произошла ошибка при обработке ответа.")
+    except telebot.apihelper.ApiTelegramException as e:
+        print(f"Ошибка отправки сообщения: {e}")
+        bot.answer_callback_query(call.id, "Произошла ошибка при отправке сообщения.")
+
+def check_for_winner(chat_id, player1_id, player1_username, player2_id, player2_username):
+    """Проверяет, сделали ли оба игрока ходы, и определяет победителя."""
+    print("check_for_winner start")  # <----
+    if chat_id in games:
+        try:
+            player1_id, player1_username, player1_move, player2_id, player2_username, player2_move = games[chat_id]  # Достаем все значения
+            print("check_for_winner: Игроки ход сделали")  # <----
+            # Определяем есть ли ход у обоих игроков
+            if player1_move is not None and player2_move is not None:  # Проверяем, что оба сделали ход
+
+                winner = determine_winner(player1_move, player2_move)
+
+                # Сохраняем результаты игры
+                save_rock_paper_scissors_game(chat_id, player1_id, player1_username, player1_move, player2_id, player2_username, player2_move, winner)
+                # Выводим победителя
+                bot.send_message(chat_id, f"Игра окончена!\n@{player1_username} выбрал {player1_move}\n@{player2_username} выбрал {player2_move}\n{winner}!")
+                del games[chat_id] #<---- удаляем игру
+
+            else:
+                print("check_for_winner: Не все игроки сделали ход.")
+        except Exception as e:
+            print(f"check_for_winner: Ошибка в check_for_winner: {e}")
+
+    else:
+        print("check_for_winner: Игра не найдена")
+    print("check_for_winner end")  # <----
+
+# Обработчик callback_query (ходы второго игрока)
+@bot.callback_query_handler(func=lambda call: call.data.startswith('move_'))
+def handle_callback_query(call):
+    chat_id = call.message.chat.id
+    player2_id = call.from_user.id
+    player2_username = call.from_user.username
+    move = call.data[5:]  # Извлекаем ход из callback_data (убираем "move_")
+
+    if chat_id in games:
+        player1_id, player1_move, player2_username_or_id, player2_move = games[chat_id]
+
+        # Нужно убедиться, что callback нажал именно игрок 2
+        if str(player2_username_or_id).replace('@', '') == call.from_user.username:
+
+            games[chat_id] = (player1_id, player1_move, player2_username_or_id, move)
+            bot.send_message(chat_id, f"Игрок 2 (@{player2_username}) выбрал {move}.")
+
+            # Определяем победителя
+            winner = determine_winner(player1_move, move)
+            bot.send_message(chat_id, winner)
+
+            # Сохраняем результаты игры
+            save_rock_paper_scissors_game(player1_id, call.message.chat.username, player1_move, player2_id, player2_username, move, winner)
+
+        else:
+            bot.send_message(chat_id, "Это не ваша игра!")
+    else:
+        bot.send_message(chat_id, "Игра не найдена.")
+
+@bot.message_handler(commands=['end_rock'])
+def end_rock(message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+
+    # Проверяем, является ли пользователь администратором
+    try:
+        chat_member = bot.get_chat_member(chat_id, user_id)
+        if chat_member.status in ['creator', 'administrator']:
+            # Завершаем активную игру в этом чате
+            if chat_id in games:
+                del games[chat_id]
+                bot.reply_to(message, "Активная игра была завершена администратором.")
+            else:
+                bot.reply_to(message, "В этом чате нет активных игр.")
+        else:
+            bot.reply_to(message, "Только администраторы могут использовать эту команду.")
+    except telebot.apihelper.ApiTelegramException as e:
+        bot.reply_to(message, "Не удалось получить информацию о пользователе. Убедитесь, что бот имеет необходимые права.")
+
+# Enable saving next step handlers to file "./.handlers-saves/step.save".
+# Delay=2 means that after any change in next step handlers bot will wait 2 seconds before saving.
+bot.enable_save_next_step_handlers(delay=2)
+
+# Load next step handlers from savefile (default "./.handlers-saves/step.save")
+# WARNING It will work only if enable_save_next_step_handlers was called!
+bot.load_next_step_handlers()
 
 @bot.message_handler(func=lambda message: True)
 def echo_all(message):
@@ -1745,6 +2146,6 @@ if __name__ == '__main__':
     create_tables()  # Создаем таблицы при запуске
     print("Бот запущен...")
     try:
-        bot.polling(none_stop=True)
+        bot.infinity_polling(timeout=30)  # Указываем таймаут в секундах
     except Exception as e:
         print(f"Ошибка при polling: {e}")
