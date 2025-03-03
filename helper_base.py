@@ -13,11 +13,11 @@ from telebot import types
 import random
 import hashlib
 
-BOT_TOKEN = 
-DATABASE_PATH = 
-CROSS_ZERO_DB_PATH = 
+BOT_TOKEN = "6370204668:AAE8bXa4KdAVYQOJ66wURK7xFY21SzJW7Rg"
+DATABASE_PATH = "E:\\Helper_bot\\bot_database.db" # Укажите имя файла вашей БД
+CROSS_ZERO_DB_PATH = "E:\\Helper_bot\\cross_and_zero_database.db"
 print(f"DATABASE_PATH = {DATABASE_PATH}")
-OWNER_ID = 
+OWNER_ID  = 1241613863
 
 def create_cross_zero_tables():
     try:
@@ -1886,14 +1886,6 @@ def end_rock(message):
             bot.reply_to(message, "Только администраторы могут использовать эту команду.")
     except telebot.apihelper.ApiTelegramException as e:
         bot.reply_to(message, "Не удалось получить информацию о пользователе. Убедитесь, что бот имеет необходимые права.")
-
-# Enable saving next step handlers to file "./.handlers-saves/step.save".
-# Delay=2 means that after any change in next step handlers bot will wait 2 seconds before saving.
-bot.enable_save_next_step_handlers(delay=2)
-
-# Load next step handlers from savefile (default "./.handlers-saves/step.save")
-# WARNING It will work only if enable_save_next_step_handlers was called!
-bot.load_next_step_handlers()
 
 @bot.message_handler(func=lambda message: True)
 def echo_all(message):
